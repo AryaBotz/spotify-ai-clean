@@ -4,16 +4,15 @@ const SpotifyWebApi = require("spotify-web-api-node");
 const app = express();
 
 // =====================
-// HEALTH CHECK
+// BASIC CHECK
 // =====================
 app.get("/", (req, res) => {
   res.send("SPOTIFY AI BACKEND OK ✔");
 });
 
 // =====================
-// DEBUG ENV (WAJIB)
+// DEBUG ENV
 // =====================
-console.log("ENV CHECK:");
 console.log("CLIENT_ID:", process.env.CLIENT_ID ? "OK" : "MISSING");
 console.log("CLIENT_SECRET:", process.env.CLIENT_SECRET ? "OK" : "MISSING");
 console.log("REDIRECT_URI:", process.env.REDIRECT_URI);
@@ -28,6 +27,12 @@ const spotify = new SpotifyWebApi({
 });
 
 // =====================
+// TEMP TOKEN STORAGE (IMPORTANT FIX)
+// =====================
+let accessToken = null;
+let refreshToken = null;
+
+// =====================
 // LOGIN ROUTE
 // =====================
 app.get("/login", (req, res) => {
@@ -38,14 +43,13 @@ app.get("/login", (req, res) => {
     "user-read-recently-played"
   ];
 
-  const authorizeURL = spotify.createAuthorizeURL(scopes, null, true);
+  const url = spotify.createAuthorizeURL(scopes, null, true);
 
-  console.log("LOGIN URL GENERATED");
-  res.redirect(authorizeURL);
+  res.redirect(url);
 });
 
 // =====================
-// CALLBACK ROUTE (FIXED)
+// CALLBACK (FIXED)
 // =====================
 app.get("/callback", async (req, res) => {
   console.log("CALLBACK HIT:", req.query);
@@ -54,7 +58,7 @@ app.get("/callback", async (req, res) => {
   const error = req.query.error;
 
   if (error) {
-    return res.status(400).send("Spotify Error: " + error);
+    return res.status(400).json({ error });
   }
 
   if (!code) {
@@ -62,43 +66,62 @@ app.get("/callback", async (req, res) => {
   }
 
   try {
-    console.log("EXCHANGING CODE...");
-
     const data = await spotify.authorizationCodeGrant(code);
 
-    const access_token = data.body.access_token;
-    const refresh_token = data.body.refresh_token;
+    accessToken = data.body.access_token;
+    refreshToken = data.body.refresh_token;
 
-    spotify.setAccessToken(access_token);
-    spotify.setRefreshToken(refresh_token);
+    spotify.setAccessToken(accessToken);
+    spotify.setRefreshToken(refreshToken);
 
     console.log("LOGIN SUCCESS ✔");
 
     return res.send(`
       <h1>LOGIN SUCCESS ✔</h1>
-      <p>Spotify OAuth berhasil.</p>
-      <p>Kamu sudah bisa tutup halaman ini.</p>
+      <p>Spotify OAuth OK</p>
     `);
 
   } catch (err) {
     console.log("AUTH ERROR:", err.message);
 
-    return res.status(500).send(`
-      <h1>AUTH FAILED</h1>
-      <pre>${err.message}</pre>
-    `);
+    return res.status(500).json({
+      error: err.message,
+      details: err.body || err
+    });
   }
 });
 
 // =====================
-// GET USER PROFILE (NEXT STEP AI ENGINE)
+// FORCE TOKEN CHECK MIDDLEWARE
 // =====================
-app.get("/me", async (req, res) => {
+function ensureAuth(req, res, next) {
+  if (!accessToken) {
+    return res.status(401).json({
+      error: "NOT_AUTHENTICATED",
+      message: "Login dulu via /login"
+    });
+  }
+
+  spotify.setAccessToken(accessToken);
+  spotify.setRefreshToken(refreshToken);
+
+  next();
+}
+
+// =====================
+// /ME FIXED (NO OBJECT ERROR)
+// =====================
+app.get("/me", ensureAuth, async (req, res) => {
   try {
     const me = await spotify.getMe();
     res.json(me.body);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.log("ME ERROR:", err);
+
+    res.status(500).json({
+      error: err.message,
+      details: err.body || err
+    });
   }
 });
 
