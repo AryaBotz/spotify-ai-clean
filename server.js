@@ -11,14 +11,14 @@ app.get("/", (req, res) => {
 });
 
 // =====================
-// ENV DEBUG
+// ENV CHECK
 // =====================
 console.log("CLIENT_ID:", process.env.CLIENT_ID ? "OK" : "MISSING");
 console.log("CLIENT_SECRET:", process.env.CLIENT_SECRET ? "OK" : "MISSING");
 console.log("REDIRECT_URI:", process.env.REDIRECT_URI);
 
 // =====================
-// SPOTIFY BASE
+// SPOTIFY BASE INSTANCE
 // =====================
 const spotifyBase = new SpotifyWebApi({
   clientId: process.env.CLIENT_ID,
@@ -31,12 +31,6 @@ const spotifyBase = new SpotifyWebApi({
 // =====================
 let accessToken = null;
 let refreshToken = null;
-
-// =====================
-// 🔥 GLOBAL CALLBACK LOCK (FIX UTAMA)
-// =====================
-let processingCallback = false;
-let lastCode = null;
 
 // =====================
 // LOGIN
@@ -54,34 +48,21 @@ app.get("/login", (req, res) => {
 });
 
 // =====================
-// CALLBACK (ANTI DOUBLE EXECUTION)
+// CALLBACK (SAFE + ANTI ERROR)
 // =====================
 app.get("/callback", async (req, res) => {
-  const code = req.query.code;
-
   console.log("CALLBACK HIT:", req.query);
 
+  const code = req.query.code;
+
   if (!code) {
-    return res.status(400).send("NO CODE RECEIVED");
+    return res.status(400).json({
+      error: "NO_CODE_RECEIVED",
+      query: req.query
+    });
   }
-
-  // 🔥 BLOCK DUPLICATE CALLBACK
-  if (processingCallback) {
-    console.log("BLOCKED: still processing callback");
-    return res.send("WAIT - processing");
-  }
-
-  if (lastCode === code) {
-    console.log("BLOCKED: same code reused");
-    return res.send("CODE ALREADY USED");
-  }
-
-  processingCallback = true;
-  lastCode = code;
 
   try {
-    console.log("EXCHANGING CODE...");
-
     const data = await spotifyBase.authorizationCodeGrant(code);
 
     accessToken = data.body.access_token;
@@ -89,21 +70,19 @@ app.get("/callback", async (req, res) => {
 
     console.log("ACCESS TOKEN SAVED ✔");
 
-    processingCallback = false;
-
     return res.send(`
       <h1>LOGIN SUCCESS ✔</h1>
-      <p>You can close this page.</p>
+      <p>You can close this page</p>
     `);
 
   } catch (err) {
-    processingCallback = false;
-
-    console.log("AUTH ERROR:", err.message);
+    console.log("AUTH ERROR RAW:", err);
 
     return res.status(500).json({
-      error: err.message,
-      details: err.body || err
+      error: err?.message || "AUTH_FAILED",
+      statusCode: err?.statusCode || null,
+      spotifyError: err?.body || null,
+      raw: safeStringify(err)
     });
   }
 });
@@ -128,7 +107,7 @@ app.get("/me", async (req, res) => {
   try {
     if (!accessToken) {
       return res.status(401).json({
-        error: "NOT_LOGGED_IN"
+        error: "NOT_AUTHENTICATED"
       });
     }
 
@@ -138,17 +117,30 @@ app.get("/me", async (req, res) => {
     return res.json(me.body);
 
   } catch (err) {
-    console.log("ME ERROR:", err);
+    console.log("ME ERROR RAW:", err);
 
     return res.status(500).json({
-      error: err.message,
-      details: err.body || err
+      error: err?.message || "ME_FAILED",
+      statusCode: err?.statusCode || null,
+      spotifyError: err?.body || null,
+      raw: safeStringify(err)
     });
   }
 });
 
 // =====================
-// CRASH PROTECTION (IMPORTANT FOR RAILWAY)
+// SAFE ERROR STRINGIFY (FIX [object Object])
+// =====================
+function safeStringify(obj) {
+  try {
+    return JSON.parse(JSON.stringify(obj, Object.getOwnPropertyNames(obj)));
+  } catch {
+    return String(obj);
+  }
+}
+
+// =====================
+// CRASH HANDLER (RAILWAY SAFE)
 // =====================
 process.on("uncaughtException", (err) => {
   console.log("UNCAUGHT:", err);
@@ -161,7 +153,7 @@ process.on("unhandledRejection", (err) => {
 // =====================
 // START SERVER
 // =====================
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
