@@ -18,13 +18,7 @@ console.log("CLIENT_SECRET:", process.env.CLIENT_SECRET ? "OK" : "MISSING");
 console.log("REDIRECT_URI:", process.env.REDIRECT_URI);
 
 // =====================
-// TOKEN STORAGE (IMPORTANT)
-// =====================
-let accessToken = null;
-let refreshToken = null;
-
-// =====================
-// SPOTIFY BASE CONFIG
+// SPOTIFY BASE
 // =====================
 const spotifyBase = new SpotifyWebApi({
   clientId: process.env.CLIENT_ID,
@@ -33,7 +27,19 @@ const spotifyBase = new SpotifyWebApi({
 });
 
 // =====================
-// LOGIN ROUTE
+// TOKEN STORAGE
+// =====================
+let accessToken = null;
+let refreshToken = null;
+
+// =====================
+// 🔥 GLOBAL CALLBACK LOCK (FIX UTAMA)
+// =====================
+let processingCallback = false;
+let lastCode = null;
+
+// =====================
+// LOGIN
 // =====================
 app.get("/login", (req, res) => {
   const scopes = [
@@ -44,28 +50,38 @@ app.get("/login", (req, res) => {
   ];
 
   const url = spotifyBase.createAuthorizeURL(scopes, null, true);
-
   res.redirect(url);
 });
 
 // =====================
-// CALLBACK (SAVE TOKEN)
+// CALLBACK (ANTI DOUBLE EXECUTION)
 // =====================
 app.get("/callback", async (req, res) => {
-  console.log("CALLBACK HIT:", req.query);
-
   const code = req.query.code;
-  const error = req.query.error;
 
-  if (error) {
-    return res.status(400).json({ error });
-  }
+  console.log("CALLBACK HIT:", req.query);
 
   if (!code) {
     return res.status(400).send("NO CODE RECEIVED");
   }
 
+  // 🔥 BLOCK DUPLICATE CALLBACK
+  if (processingCallback) {
+    console.log("BLOCKED: still processing callback");
+    return res.send("WAIT - processing");
+  }
+
+  if (lastCode === code) {
+    console.log("BLOCKED: same code reused");
+    return res.send("CODE ALREADY USED");
+  }
+
+  processingCallback = true;
+  lastCode = code;
+
   try {
+    console.log("EXCHANGING CODE...");
+
     const data = await spotifyBase.authorizationCodeGrant(code);
 
     accessToken = data.body.access_token;
@@ -73,12 +89,16 @@ app.get("/callback", async (req, res) => {
 
     console.log("ACCESS TOKEN SAVED ✔");
 
+    processingCallback = false;
+
     return res.send(`
       <h1>LOGIN SUCCESS ✔</h1>
-      <p>Spotify OAuth OK</p>
+      <p>You can close this page.</p>
     `);
 
   } catch (err) {
+    processingCallback = false;
+
     console.log("AUTH ERROR:", err.message);
 
     return res.status(500).json({
@@ -89,40 +109,38 @@ app.get("/callback", async (req, res) => {
 });
 
 // =====================
-// CREATE AUTH INSTANCE (SAFE EVERY REQUEST)
+// SAFE SPOTIFY INSTANCE
 // =====================
 function getSpotify() {
   return new SpotifyWebApi({
     clientId: process.env.CLIENT_ID,
     clientSecret: process.env.CLIENT_SECRET,
     redirectUri: process.env.REDIRECT_URI,
-    accessToken: accessToken,
-    refreshToken: refreshToken
+    accessToken,
+    refreshToken
   });
 }
 
 // =====================
-// /ME FIXED (NO 403 LAGI)
+// /ME FIXED
 // =====================
 app.get("/me", async (req, res) => {
   try {
     if (!accessToken) {
       return res.status(401).json({
-        error: "NOT_AUTHENTICATED",
-        message: "Login dulu via /login"
+        error: "NOT_LOGGED_IN"
       });
     }
 
     const spotify = getSpotify();
-
     const me = await spotify.getMe();
 
-    res.json(me.body);
+    return res.json(me.body);
 
   } catch (err) {
-    console.log("ME ERROR RAW:", err);
+    console.log("ME ERROR:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       error: err.message,
       details: err.body || err
     });
@@ -130,9 +148,20 @@ app.get("/me", async (req, res) => {
 });
 
 // =====================
-// START SERVER (RAILWAY SAFE)
+// CRASH PROTECTION (IMPORTANT FOR RAILWAY)
 // =====================
-const PORT = process.env.PORT || 3000;
+process.on("uncaughtException", (err) => {
+  console.log("UNCAUGHT:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.log("UNHANDLED:", err);
+});
+
+// =====================
+// START SERVER
+// =====================
+const PORT = process.env.PORT;
 
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
