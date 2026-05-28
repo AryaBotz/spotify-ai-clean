@@ -11,26 +11,26 @@ app.get("/", (req, res) => {
 });
 
 // =====================
-// DEBUG ENV
+// ENV DEBUG
 // =====================
 console.log("CLIENT_ID:", process.env.CLIENT_ID ? "OK" : "MISSING");
 console.log("CLIENT_SECRET:", process.env.CLIENT_SECRET ? "OK" : "MISSING");
 console.log("REDIRECT_URI:", process.env.REDIRECT_URI);
 
 // =====================
-// SPOTIFY INIT
+// TOKEN STORAGE (IMPORTANT)
 // =====================
-const spotify = new SpotifyWebApi({
+let accessToken = null;
+let refreshToken = null;
+
+// =====================
+// SPOTIFY BASE CONFIG
+// =====================
+const spotifyBase = new SpotifyWebApi({
   clientId: process.env.CLIENT_ID,
   clientSecret: process.env.CLIENT_SECRET,
   redirectUri: process.env.REDIRECT_URI
 });
-
-// =====================
-// TEMP TOKEN STORAGE (IMPORTANT FIX)
-// =====================
-let accessToken = null;
-let refreshToken = null;
 
 // =====================
 // LOGIN ROUTE
@@ -43,13 +43,13 @@ app.get("/login", (req, res) => {
     "user-read-recently-played"
   ];
 
-  const url = spotify.createAuthorizeURL(scopes, null, true);
+  const url = spotifyBase.createAuthorizeURL(scopes, null, true);
 
   res.redirect(url);
 });
 
 // =====================
-// CALLBACK (FIXED)
+// CALLBACK (SAVE TOKEN)
 // =====================
 app.get("/callback", async (req, res) => {
   console.log("CALLBACK HIT:", req.query);
@@ -66,15 +66,12 @@ app.get("/callback", async (req, res) => {
   }
 
   try {
-    const data = await spotify.authorizationCodeGrant(code);
+    const data = await spotifyBase.authorizationCodeGrant(code);
 
     accessToken = data.body.access_token;
     refreshToken = data.body.refresh_token;
 
-    spotify.setAccessToken(accessToken);
-    spotify.setRefreshToken(refreshToken);
-
-    console.log("LOGIN SUCCESS ✔");
+    console.log("ACCESS TOKEN SAVED ✔");
 
     return res.send(`
       <h1>LOGIN SUCCESS ✔</h1>
@@ -92,31 +89,38 @@ app.get("/callback", async (req, res) => {
 });
 
 // =====================
-// FORCE TOKEN CHECK MIDDLEWARE
+// CREATE AUTH INSTANCE (SAFE EVERY REQUEST)
 // =====================
-function ensureAuth(req, res, next) {
-  if (!accessToken) {
-    return res.status(401).json({
-      error: "NOT_AUTHENTICATED",
-      message: "Login dulu via /login"
-    });
-  }
-
-  spotify.setAccessToken(accessToken);
-  spotify.setRefreshToken(refreshToken);
-
-  next();
+function getSpotify() {
+  return new SpotifyWebApi({
+    clientId: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    redirectUri: process.env.REDIRECT_URI,
+    accessToken: accessToken,
+    refreshToken: refreshToken
+  });
 }
 
 // =====================
-// /ME FIXED (NO OBJECT ERROR)
+// /ME FIXED (NO 403 LAGI)
 // =====================
-app.get("/me", ensureAuth, async (req, res) => {
+app.get("/me", async (req, res) => {
   try {
+    if (!accessToken) {
+      return res.status(401).json({
+        error: "NOT_AUTHENTICATED",
+        message: "Login dulu via /login"
+      });
+    }
+
+    const spotify = getSpotify();
+
     const me = await spotify.getMe();
+
     res.json(me.body);
+
   } catch (err) {
-    console.log("ME ERROR:", err);
+    console.log("ME ERROR RAW:", err);
 
     res.status(500).json({
       error: err.message,
